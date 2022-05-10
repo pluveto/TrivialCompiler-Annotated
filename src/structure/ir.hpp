@@ -22,6 +22,8 @@ struct IrFunc;
 struct Use;
 struct MemPhiInst;
 
+// 万能对象……
+// Value 泛指一切在指令中被引用的量。包括：常量、全局量、指令
 struct Value {
   // value is used by ...
   ilist<Use> uses;
@@ -46,8 +48,9 @@ struct Value {
   } tag;
 
   Value(Tag tag) : tag(tag) {}
-
+  // 添加被使用
   void addUse(Use *u) { uses.insertAtEnd(u); }
+  // 删除被使用
   void killUse(Use *u) { uses.remove(u); }
 
   // 将对自身所有的使用替换成对v的使用
@@ -56,6 +59,7 @@ struct Value {
   void deleteValue();
 };
 
+// 表示某个 Value 被某个 Inst 所引用
 struct Use {
   DEFINE_ILIST(Use)
 
@@ -154,6 +158,7 @@ struct ConstValue : Value {
 
   static std::unordered_map<i32, ConstValue *> POOL;
 
+  // 根据常量值在常量池获取对应的 Value 对象
   static ConstValue *get(i32 imm) {
     auto [it, inserted] = POOL.insert({imm, nullptr});
     if (inserted) it->second = new ConstValue(imm);
@@ -165,6 +170,7 @@ struct ConstValue : Value {
   explicit ConstValue(i32 imm) : Value(Tag::Const), imm(imm) {}
 };
 
+// 表示一个全局量的声明，例如全局变量。和 ParamRef 一个类型的玩意儿，名字不同罢了。
 struct GlobalRef : Value {
   DEFINE_CLASSOF(Value, p->tag == Tag::Global);
   Decl *decl;
@@ -191,14 +197,20 @@ struct Inst : Value {
   DEFINE_CLASSOF(Value, Tag::Add <= p->tag && p->tag <= Tag::MemPhi);
   // instruction linked list
   DEFINE_ILIST(Inst)
-  // basic block
+  // 指令所属块
   BasicBlock *bb;
 
   // insert this inst before `insertBefore`
-  Inst(Tag tag, Inst *insertBefore) : Value(tag), bb(insertBefore->bb) { bb->insts.insertBefore(this, insertBefore); }
+  Inst(Tag tag, Inst *insertBefore) : Value(tag), bb(insertBefore->bb) 
+  {
+     bb->insts.insertBefore(this, insertBefore); 
+     }
 
   // insert this inst at the end of `insertAtEnd`
-  Inst(Tag tag, BasicBlock *insertAtEnd) : Value(tag), bb(insertAtEnd) { bb->insts.insertAtEnd(this); }
+  Inst(Tag tag, BasicBlock *insertAtEnd) : Value(tag), bb(insertAtEnd) 
+  { 
+    bb->insts.insertAtEnd(this); 
+    }
 
   // 只初始化tag，没有加入到链表中，调用者手动加入
   Inst(Tag tag) : Value(tag) {}
@@ -308,11 +320,15 @@ struct BranchInst : Inst {
       : Inst(Tag::Branch, insertAtEnd), cond(cond, this), left(left), right(right) {}
 };
 
+// 无条件跳转
 struct JumpInst : Inst {
   DEFINE_CLASSOF(Value, p->tag == Tag::Jump);
+  // 跳转到的地方
   BasicBlock *next;
 
-  JumpInst(BasicBlock *next, BasicBlock *insertAtEnd) : Inst(Tag::Jump, insertAtEnd), next(next) {}
+  JumpInst(BasicBlock *next, 
+  // 所属的基本块
+  BasicBlock *insertAtEnd) : Inst(Tag::Jump, insertAtEnd), next(next) {}
 };
 
 struct ReturnInst : Inst {
@@ -322,10 +338,17 @@ struct ReturnInst : Inst {
   ReturnInst(Value *ret, BasicBlock *insertAtEnd) : Inst(Tag::Return, insertAtEnd), ret(ret, this) {}
 };
 
+// 访存指令
+// + GetElementPtrInst
+// + LoadInst
+// + StoreInst
 struct AccessInst : Inst {
   DEFINE_CLASSOF(Value, p->tag == Tag::GetElementPtr || p->tag == Tag::Load || p->tag == Tag::Store);
+  // 数组的定义
   Decl *lhs_sym;
+  // 若是第一个，则是对应符号的 AllocaInst，否则指向上一个 GetElementPtrInst 指令
   Use arr;
+  // 对应维度表达式的根指令
   Use index;
   AccessInst(Inst::Tag tag, Decl *lhs_sym, Value *arr, Value *index, BasicBlock *insertAtEnd)
       : Inst(tag, insertAtEnd), lhs_sym(lhs_sym), arr(arr, this), index(index, this) {}
@@ -333,18 +356,22 @@ struct AccessInst : Inst {
 
 struct GetElementPtrInst : AccessInst {
   DEFINE_CLASSOF(Value, p->tag == Tag::GetElementPtr);
+  // 每个元素的大小
   int multiplier;
+
+  // 获取子数组
+  // - arr: 若是第一个，则是对应符号的 AllocaInst，否则指向上一个 GetElementPtrInst 指令
   GetElementPtrInst(Decl *lhs_sym, Value *arr, Value *index, int multiplier, BasicBlock *insertAtEnd)
       : AccessInst(Tag::GetElementPtr, lhs_sym, arr, index, insertAtEnd), multiplier(multiplier) {}
 };
-
+// 读取某个变量或常量的值
 struct LoadInst : AccessInst {
   DEFINE_CLASSOF(Value, p->tag == Tag::Load);
   Use mem_token;  // 由memdep pass计算
   LoadInst(Decl *lhs_sym, Value *arr, Value *index, BasicBlock *insertAtEnd)
       : AccessInst(Tag::Load, lhs_sym, arr, index, insertAtEnd), mem_token(nullptr, this) {}
 };
-
+// 存储指令，表示
 struct StoreInst : AccessInst {
   DEFINE_CLASSOF(Value, p->tag == Tag::Store);
   Use data;
@@ -358,7 +385,7 @@ struct CallInst : Inst {
   std::vector<Use> args;
   CallInst(IrFunc *func, BasicBlock *insertAtEnd) : Inst(Tag::Call, insertAtEnd), func(func) {}
 };
-
+// 栈变量分配
 struct AllocaInst : Inst {
   DEFINE_CLASSOF(Value, p->tag == Tag::Alloca);
 
@@ -366,24 +393,47 @@ struct AllocaInst : Inst {
   AllocaInst(Decl *sym, BasicBlock *insertBefore) : Inst(Tag::Alloca, insertBefore), sym(sym) {}
 };
 
+// 自动决策指令
 struct PhiInst : Inst {
   DEFINE_CLASSOF(Value, p->tag == Tag::Phi);
+  // 将被从中做出选择的值们 Phi(incoming_values[0], incoming_values[1], ...)
   std::vector<Use> incoming_values;
+  // 流入块，即指令所属块的前驱
   std::vector<BasicBlock *> &incoming_bbs() { return bb->pred; }
 
+  /**
+   * @brief Construct a new Phi Inst object
+   * 
+   * @param insertAtFront 所属基本块。将会把 Phi 指令插入到此基本块前
+   */
   explicit PhiInst(BasicBlock *insertAtFront) : Inst(Tag::Phi) {
     bb = insertAtFront;
+    /*
+     * incom bbs:
+     * 1. inc1 流入块
+     *      \
+     *        -> 本块。本块的构成为：this(phi) 作为 bb 的第一个指令 -> bb 的后面的指令
+     *      /
+     * 2. inc2 流入块
+     */
     bb->insts.insertAtBegin(this);
     u32 n = incoming_bbs().size();
+    // 增加容量到 n，这是为了预留空间从而 emplace
     incoming_values.reserve(n);
     for (u32 i = 0; i < n; ++i) {
+
+      // 占据空间，以便优化时填入实际的指令
+
       // 在new PhiInst的时候还不知道它用到的value是什么，先填nullptr，后面再用Use::set填上
+      //                      Use < Value,  PhiInst * >
       incoming_values.emplace_back(nullptr, this);
     }
   }
-
+  // 在某指令前插入此指令
   explicit PhiInst(Inst *insertBefore) : Inst(Tag::Phi, insertBefore) {
     u32 n = incoming_bbs().size();
+
+    // 预留
     incoming_values.reserve(n);
     for (u32 i = 0; i < n; ++i) {
       incoming_values.emplace_back(nullptr, this);
@@ -450,7 +500,8 @@ std::array<BasicBlock **, 2> BasicBlock::succ_ref() {
   else
     UNREACHABLE();
 }
-
+// 当满足: 尾指令跳转指令及其变体时,才返回有效
+// 若无效,调用者视情况进行补全
 bool BasicBlock::valid() {
   Inst *end = insts.tail;
   return end && (isa<BranchInst>(end) || isa<JumpInst>(end) || isa<ReturnInst>(end));

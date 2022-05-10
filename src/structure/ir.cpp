@@ -39,6 +39,8 @@ void Value::deleteValue() {
     UNREACHABLE();
 }
 
+// 常量池
+// key: 常量 value: 对应的Value对象
 std::unordered_map<i32, ConstValue *> ConstValue::POOL;
 
 UndefValue UndefValue::INSTANCE;
